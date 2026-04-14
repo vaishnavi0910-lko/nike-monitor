@@ -1,0 +1,11 @@
+path: data/raw/images
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 4
+names:
+  0: nike_fake_airforce
+  1: nike_fake_jordan
+  2: nike_original_airforce
+  3: nike_original_jordan
