@@ -14,7 +14,7 @@ from fastapi                 import FastAPI, UploadFile, File, HTTPException, We
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses       import HTMLResponse
 from fastapi.staticfiles     import StaticFiles
-from fastapi.templating      import Jinja2Templates
+#from fastapi.templating      import Jinja2Templates
 from pydantic                import BaseModel
  
 # ── Constants (no circular import) ───────────────────────────────
@@ -86,7 +86,7 @@ try:
     TEMPLATES_DIR = Path("templates"); TEMPLATES_DIR.mkdir(exist_ok=True)
 except Exception:
     TEMPLATES_DIR = Path("templates")
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+#templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
  
 STATIC_DIR = Path("static")
 if STATIC_DIR.exists():
@@ -288,11 +288,14 @@ def fallback_feed(limit=50, source=None):
 # ROUTES
 # ══════════════════════════════════════════════════════════════════
  
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    idx = Path("templates/index.html")
-    if idx.exists(): return templates.TemplateResponse("index.html", {"request": request})
-    return HTMLResponse("<h2>Brand Monitor API running. See <a href='/docs'>/docs</a></h2>")
+#@app.get("/", response_class=HTMLResponse)
+#async def dashboard(request: Request):
+    #idx = Path("templates/index.html")
+    #if idx.exists(): return templates.TemplateResponse("index.html", {"request": request})
+    #return HTMLResponse("<h2>Brand Monitor API running. See <a href='/docs'>/docs</a></h2>")
+@app.get("/")
+async def dashboard():
+    return {"status": "API running 🚀"}
  
 @app.get("/health")
 def health():
@@ -570,4 +573,3 @@ if __name__ == "__main__":
 
 
 
-    
