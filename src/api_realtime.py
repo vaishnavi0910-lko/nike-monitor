@@ -21,6 +21,10 @@ from fastapi.staticfiles     import StaticFiles
 from fastapi.templating      import Jinja2Templates
 from pydantic                import BaseModel
 
+from src.constant import (
+    FAKE_KEYWORDS, HIGH_CONFIDENCE_FAKE_PHRASES,
+    SUSPICIOUS_COMBOS, THRESHOLD_FAKE, THRESHOLD_UNCERTAIN
+)
 # ── Local imports ────────────────────────────────────────────────
 try:
     from src.detector import load_yolo, load_efficientnet, detect_counterfeit
