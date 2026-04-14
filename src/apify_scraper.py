@@ -22,6 +22,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.database import insert_posts, log_scrape
 
+from src.constant import FAKE_KEYWORDS as FAKE_WORDS, HIGH_CONFIDENCE_FAKE_PHRASES
 # ══════════════════════════════════════════════════════════════════
 # CONFIG
 # ══════════════════════════════════════════════════════════════════
