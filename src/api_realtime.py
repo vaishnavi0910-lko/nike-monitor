@@ -571,5 +571,5 @@ def update_sub(req: SubscriptionUpdate, authorization: str = Header(None)):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 10000))
     uvicorn.run("src.api_realtime:app", host="0.0.0.0", port=port)
