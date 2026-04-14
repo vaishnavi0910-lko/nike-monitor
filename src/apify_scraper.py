@@ -1,17 +1,3 @@
-"""
-Brand Monitor — src/apify_scraper.py
-=======================================
-Live Apify scraping + background scheduler.
-Scrapes Instagram hashtags via Apify's Instagram Scraper actor,
-stores results in SQLite, and broadcasts new posts over WebSocket.
-
-Env vars:
-    APIFY_TOKEN — your Apify API token
-
-Install:
-    pip install apscheduler requests
-"""
-
 import os
 import re
 import json
@@ -22,7 +8,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.database import insert_posts, log_scrape
 
-from src.constant import FAKE_KEYWORDS as FAKE_WORDS, HIGH_CONFIDENCE_FAKE_PHRASES
+# ── Constants (no circular import) ───────────────────────────────
+from src.constants import FAKE_KEYWORDS as FAKE_WORDS, HIGH_CONFIDENCE_FAKE_PHRASES
+
 # ══════════════════════════════════════════════════════════════════
 # CONFIG
 # ══════════════════════════════════════════════════════════════════
@@ -31,7 +19,6 @@ APIFY_TOKEN = os.getenv("APIFY_TOKEN")
 ACTOR_ID    = "apify~instagram-scraper"
 HEADERS     = {"Content-Type": "application/json"}
 
-# Default hashtags to monitor — customise for your brand
 HASHTAGS = [
     "yourbrand",
     "yourbrandshoes",
@@ -44,17 +31,6 @@ HASHTAGS = [
 
 MAX_POSTS_PER_TAG = 50
 
-# Import shared keyword lists from api_realtime to avoid duplicate logic.
-# Fall back to a minimal inline list only if the import fails at load time.
-try:
-    from src.api_realtime import FAKE_KEYWORDS as FAKE_WORDS, HIGH_CONFIDENCE_FAKE_PHRASES
-except Exception:
-    FAKE_WORDS = [
-        "replica", "first copy", "fake", "aaa", "1:1", "dupe",
-        "dhgate", "weidian", "dm for price", "cheap jordan", "cheap nike"
-    ]
-    HIGH_CONFIDENCE_FAKE_PHRASES = FAKE_WORDS
-
 # ══════════════════════════════════════════════════════════════════
 # WEBSOCKET BROADCAST CALLBACK
 # ══════════════════════════════════════════════════════════════════
@@ -62,13 +38,10 @@ except Exception:
 _broadcast_fn = None
 
 def set_broadcast(fn):
-    """Register the async broadcast function from api_realtime.py."""
     global _broadcast_fn
     _broadcast_fn = fn
 
-
 def broadcast(data: dict):
-    """Fire-and-forget: send data to all WebSocket clients."""
     if _broadcast_fn is None:
         return
     try:
@@ -79,7 +52,6 @@ def broadcast(data: dict):
     except Exception as e:
         print(f"Broadcast error: {e}")
 
-
 # ══════════════════════════════════════════════════════════════════
 # TEXT HELPERS
 # ══════════════════════════════════════════════════════════════════
@@ -89,7 +61,6 @@ def is_english(text: str) -> bool:
         return False
     return sum(1 for c in text if ord(c) < 128) / len(text) >= 0.6
 
-
 def get_source_type(caption: str, input_url: str, final_score: float = 0.0) -> str:
     url_lower     = input_url.lower()
     caption_lower = caption.lower()
@@ -97,23 +68,21 @@ def get_source_type(caption: str, input_url: str, final_score: float = 0.0) -> s
         return "counterfeit"
     if any(w in caption_lower for w in FAKE_WORDS):
         return "counterfeit"
-    # Use text score as fallback signal — threshold matches THRESHOLD_UNCERTAIN (0.4)
     if final_score >= 0.4:
         return "counterfeit"
     return "brand"
 
-
 def parse_post(post: dict, input_url: str = "") -> dict | None:
-    """Parse a raw Apify item into our standard post schema."""
+    from src.api_realtime import get_text_score
     caption = post.get("caption") or post.get("text") or ""
     if not caption or len(caption.strip()) < 10:
         return None
     if not is_english(caption):
         return None
 
-    # Score text first so source_type can use the score
+    # Import get_text_score here (not at module level) to avoid circular import
     try:
-        from src.api_realtime import get_text_score
+        #from src.api_realtime import get_text_score
         final_score = get_text_score(caption.strip())
     except Exception as e:
         print(f"Scoring error: {e}")
@@ -136,13 +105,11 @@ def parse_post(post: dict, input_url: str = "") -> dict | None:
         "final_score": final_score
     }
 
-
 # ══════════════════════════════════════════════════════════════════
 # APIFY API CALLS
 # ══════════════════════════════════════════════════════════════════
 
 def start_apify_run(hashtags: list, max_posts: int) -> str | None:
-    """Start an Apify Instagram scraper run and return the run ID."""
     if not APIFY_TOKEN:
         print("APIFY_TOKEN not set")
         return None
@@ -178,9 +145,7 @@ def start_apify_run(hashtags: list, max_posts: int) -> str | None:
         print(f"Apify start error: {e}")
         return None
 
-
 def wait_for_run(run_id: str, timeout: int = 300) -> bool:
-    """Poll until the Apify run completes (or times out)."""
     if not APIFY_TOKEN or not run_id:
         return False
 
@@ -204,9 +169,7 @@ def wait_for_run(run_id: str, timeout: int = 300) -> bool:
         time.sleep(10)
     return False
 
-
 def fetch_run_results(run_id: str) -> list:
-    """Download all items from the completed run's dataset."""
     if not APIFY_TOKEN or not run_id:
         return []
     try:
@@ -224,19 +187,11 @@ def fetch_run_results(run_id: str) -> list:
         print(f"Fetch results error: {e}")
         return []
 
-
 # ══════════════════════════════════════════════════════════════════
 # MAIN SCRAPE FUNCTION
 # ══════════════════════════════════════════════════════════════════
 
-def run_scrape(
-    hashtags:  list = None,
-    max_posts: int  = MAX_POSTS_PER_TAG
-) -> dict:
-    """
-    Run a full Apify scrape: start → wait → fetch → store → alert.
-    Returns a result summary dict.
-    """
+def run_scrape(hashtags: list = None, max_posts: int = MAX_POSTS_PER_TAG) -> dict:
     started_at = datetime.now().isoformat()
     hashtags   = hashtags or HASHTAGS
 
@@ -268,13 +223,11 @@ def run_scrape(
     log_scrape(run_id, "success", added, started_at)
     print(f"  Added {added} new posts to database")
 
-    # Trigger alerts for every new counterfeit post using its real computed score
     try:
         from src.alert_system import process_new_post_for_alerts, check_bulk_alert
         for post in posts:
             if post.get("source_type") == "counterfeit":
                 score = post.get("final_score", 0.0)
-                # Derive label from actual score using shared thresholds (0.6/0.4)
                 if score >= 0.6:
                     label = "fake"
                 elif score >= 0.4:
@@ -289,7 +242,6 @@ def run_scrape(
     except Exception as e:
         print(f"Alert processing error: {e}")
 
-    # Notify WebSocket clients
     broadcast({
         "type":        "scrape_complete",
         "posts_added": added,
@@ -305,20 +257,16 @@ def run_scrape(
         "added":   added
     }
 
-
 # ══════════════════════════════════════════════════════════════════
 # BACKGROUND SCHEDULER
 # ══════════════════════════════════════════════════════════════════
 
 _scheduler: BackgroundScheduler = None
 
-
 def start_scheduler(interval_hours: int = 6):
-    """Start the background auto-scraper. Safe to call multiple times."""
     global _scheduler
     if _scheduler and _scheduler.running:
         return
-
     _scheduler = BackgroundScheduler()
     _scheduler.add_job(
         run_scrape,
@@ -330,9 +278,7 @@ def start_scheduler(interval_hours: int = 6):
     _scheduler.start()
     print(f"Auto-scraper started — runs every {interval_hours} hours")
 
-
 def stop_scheduler():
-    """Shutdown the background scheduler gracefully."""
     global _scheduler
     if _scheduler and _scheduler.running:
         _scheduler.shutdown()
