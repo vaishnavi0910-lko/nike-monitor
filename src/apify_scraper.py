@@ -1,3 +1,12 @@
+"""
+Brand Monitor — src/apify_scraper.py
+=======================================
+Live Apify scraping + background scheduler.
+
+Env vars:
+    APIFY_TOKEN — your Apify API token
+"""
+
 import os
 import re
 import json
@@ -9,7 +18,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from src.database import insert_posts, log_scrape
 
 # ── Constants (no circular import) ───────────────────────────────
-from src.constants import FAKE_KEYWORDS as FAKE_WORDS, HIGH_CONFIDENCE_FAKE_PHRASES
+from src.constants import (
+    FAKE_KEYWORDS as FAKE_WORDS,
+    HIGH_CONFIDENCE_FAKE_PHRASES,
+    THRESHOLD_FAKE,
+    THRESHOLD_UNCERTAIN
+)
 
 # ══════════════════════════════════════════════════════════════════
 # CONFIG
@@ -68,12 +82,11 @@ def get_source_type(caption: str, input_url: str, final_score: float = 0.0) -> s
         return "counterfeit"
     if any(w in caption_lower for w in FAKE_WORDS):
         return "counterfeit"
-    if final_score >= 0.4:
+    if final_score >= THRESHOLD_UNCERTAIN:
         return "counterfeit"
     return "brand"
 
 def parse_post(post: dict, input_url: str = "") -> dict | None:
-    from src.api_realtime import get_text_score
     caption = post.get("caption") or post.get("text") or ""
     if not caption or len(caption.strip()) < 10:
         return None
@@ -82,7 +95,7 @@ def parse_post(post: dict, input_url: str = "") -> dict | None:
 
     # Import get_text_score here (not at module level) to avoid circular import
     try:
-        #from src.api_realtime import get_text_score
+        from src.api_realtime import get_text_score
         final_score = get_text_score(caption.strip())
     except Exception as e:
         print(f"Scoring error: {e}")
@@ -228,9 +241,9 @@ def run_scrape(hashtags: list = None, max_posts: int = MAX_POSTS_PER_TAG) -> dic
         for post in posts:
             if post.get("source_type") == "counterfeit":
                 score = post.get("final_score", 0.0)
-                if score >= 0.6:
+                if score >= THRESHOLD_FAKE:
                     label = "fake"
-                elif score >= 0.4:
+                elif score >= THRESHOLD_UNCERTAIN:
                     label = "uncertain"
                 else:
                     label = "real"
@@ -283,3 +296,4 @@ def stop_scheduler():
     if _scheduler and _scheduler.running:
         _scheduler.shutdown()
         print("Scheduler stopped")
+
