@@ -1,3 +1,7 @@
+"""
+Brand Monitor — src/api_realtime.py
+Run: uvicorn src.api_realtime:app --host 0.0.0.0 --port 7860
+"""
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -19,8 +23,11 @@ from pydantic                import BaseModel
 
 # ── Constants (no circular import) ───────────────────────────────
 from src.constants import (
-    FAKE_KEYWORDS, HIGH_CONFIDENCE_FAKE_PHRASES,
-    SUSPICIOUS_COMBOS, THRESHOLD_FAKE, THRESHOLD_UNCERTAIN
+    FAKE_KEYWORDS,
+    HIGH_CONFIDENCE_FAKE_PHRASES,
+    SUSPICIOUS_COMBOS,
+    THRESHOLD_FAKE,
+    THRESHOLD_UNCERTAIN
 )
 
 # ── Local imports ────────────────────────────────────────────────
