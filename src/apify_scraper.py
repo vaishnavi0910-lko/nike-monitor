@@ -1,12 +1,3 @@
-"""
-Brand Monitor — src/apify_scraper.py
-=======================================
-Live Apify scraping + background scheduler.
-
-Env vars:
-    APIFY_TOKEN — your Apify API token
-"""
-
 import os
 import re
 import json
@@ -21,6 +12,7 @@ from src.database import insert_posts, log_scrape
 from src.constants import (
     FAKE_KEYWORDS as FAKE_WORDS,
     HIGH_CONFIDENCE_FAKE_PHRASES,
+    SUSPICIOUS_COMBOS,
     THRESHOLD_FAKE,
     THRESHOLD_UNCERTAIN
 )
@@ -296,4 +288,3 @@ def stop_scheduler():
     if _scheduler and _scheduler.running:
         _scheduler.shutdown()
         print("Scheduler stopped")
-
