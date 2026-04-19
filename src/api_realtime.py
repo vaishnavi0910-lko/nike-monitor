@@ -287,12 +287,9 @@ def fallback_feed(limit=50, source=None):
 # ══════════════════════════════════════════════════════════════════
 # ROUTES
 # ══════════════════════════════════════════════════════════════════
-
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    idx = Path("templates/index.html")
-    if idx.exists(): return templates.TemplateResponse("index.html", {"request": request})
-    return HTMLResponse("<h2>Brand Monitor API running. See <a href='/docs'>/docs</a></h2>")
+async def dashboard():
+    return HTMLResponse("<h2>Brand Monitor API running. Go to <a href='/docs'>/docs</a></h2>")
 
 @app.get("/health")
 def health():
