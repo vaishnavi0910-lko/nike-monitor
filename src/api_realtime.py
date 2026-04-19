@@ -287,6 +287,7 @@ def fallback_feed(limit=50, source=None):
 # ══════════════════════════════════════════════════════════════════
 # ROUTES
 # ══════════════════════════════════════════════════════════════════
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return HTMLResponse("<h2>Brand Monitor API running. Go to <a href='/docs'>/docs</a></h2>")
@@ -558,4 +559,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("src.api_realtime:app", host="0.0.0.0", port=port)
-
