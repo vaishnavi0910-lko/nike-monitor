@@ -16,7 +16,7 @@ import sqlite3, hashlib, secrets
 from datetime import datetime
 from pathlib  import Path
 
-DB_PATH = Path("data/brand_monitor.db")
+DB_PATH = Path("/var/www/nike-monitor/data/brand_monitor.db")
 
 # ── Single keyword list used everywhere ──────────────────────────
 FAKE_KW = [
