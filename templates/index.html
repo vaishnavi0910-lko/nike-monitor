@@ -923,60 +923,17 @@ function updateStatsFromData(data) {
 }
 
 async function loadStats() {
-  const data = await apiFetch('/stats');
-  if (!data) return;
-  stats = data;
-  const total=data.total_posts||0, fake=data.counterfeit_posts||0, real=data.brand_posts||0;
-  setText('m-total', total.toLocaleString());
-  setText('m-fake',  fake.toLocaleString());
-  setText('m-real',  real.toLocaleString());
-  setText('m-likes', (data.avg_likes||0).toFixed(1));
-  setText('m-fake-pct', `${total>0?((fake/total)*100).toFixed(1):0}% of total`);
-  setText('sb-total', fmt(total));
-  setText('sb-fake',  fmt(fake));
-  setText('sb-real',  fmt(real));
-  setText('liveCount', `▲ ${fmt(total)} posts`);
-  setText('repTotal', total.toLocaleString());
+    const data = await apiFetch('/feed');
+    if (!data) return;
 
-  // Confidence pills (show percentage of fakes vs real)
-  const fkPct = total>0?((fake/total)*100).toFixed(0):0;
-  const rlPct = total>0?((real/total)*100).toFixed(0):0;
-  const ucPct = total>0?(((data.uncertain_posts||0)/total)*100).toFixed(0):0;
-  setText('s-real', rlPct+'%');
-  setText('s-fake', fkPct+'%');
-  setText('s-sus',  ucPct+'%');
+    const total = data.length;
+    const fake = data.filter(p => p.label === 'fake').length;
+    const real = data.filter(p => p.label === 'real').length;
 
-  // Health
-  const score  = Math.max(0,Math.min(100,Math.round(100-(fake/Math.max(total,1))*100)));
-  const circ   = 163, off = circ - circ*score/100;
-  const arc    = document.getElementById('healthArc');
-  if (arc) { arc.setAttribute('stroke-dashoffset',off.toFixed(1)); arc.setAttribute('stroke', score>60?'var(--green)':score>40?'var(--amber)':'var(--accent)'); }
-  setText('healthScore', score);
-
-  // Rep bars
-  const rlPctN = total>0?Math.round(real/total*100):0;
-  const fkPctN = total>0?Math.round(fake/total*100):0;
-  setText('repReal', real.toLocaleString());
-  setText('repFake', fake.toLocaleString());
-  setStyle('repRealBar','width',rlPctN+'%');
-  setStyle('repFakeBar','width',fkPctN+'%');
-
-  // Profile dropdown stats
-  setText('pdPosts', total.toLocaleString());
-  setText('pdFake',  fake.toLocaleString());
-
-  if (data.model_accuracy) renderModelAccuracy(data.model_accuracy);
-  if (data.top_usernames)  renderTopUsers(data.top_usernames);
-
-  // Health from /health for model status
-  const h = await apiFetch('/health');
-  if (h) {
-    const tick = ok=>`<span style="color:${ok?'var(--green)':'var(--accent)'}">${ok?'✓':'✗'}</span>`;
-    setHTML('pdYolo', tick(h.yolo_loaded));
-    setHTML('pdLr',   tick(h.lr_loaded));
-  }
+    document.querySelector('#totalMentions').innerText = total;
+    document.querySelector('#fakePosts').innerText = fake;
+    document.querySelector('#realPosts').innerText = real;
 }
-
 async function loadDashboard() {
   await loadStats();
   await loadDashFeed();
@@ -992,19 +949,31 @@ async function loadDashFeed() {
 
 /* ══ FEED ══ */
 async function loadFeed() {
-  if (feedOffset===0) {
-    q('feedList').innerHTML = '<div class="skeleton" style="height:85px;margin-bottom:7px"></div><div class="skeleton" style="height:85px;margin-bottom:7px"></div><div class="skeleton" style="height:85px"></div>';
-  }
-  const src = feedFilter!=='all' ? `&source=${feedFilter}` : '';  // matches /feed?source=counterfeit|brand|uncertain
-  const data = await apiFetch(`/feed?limit=20&offset=${feedOffset}${src}`);
-  if (!data?.posts) return;
-  if (feedOffset===0) { feedData=[]; q('feedList').innerHTML=''; }
-  feedData = feedData.concat(data.posts);
-  allFeedPosts = feedData;
-  feedOffset += data.posts.length;
-  renderPosts(feedData, 'feedList', false);
-}
+    const data = await apiFetch('/feed');
+    if (!data) return;
 
+    console.log("FEED DATA:", data); // debug
+
+    const container = document.querySelector('#dashFeed'); // adjust if needed
+    container.innerHTML = '';
+
+    data.forEach(post => {
+        const el = document.createElement('div');
+        el.className = 'feed-item';
+
+        el.innerHTML = `
+            <div style="padding:10px;border-bottom:1px solid #333">
+                <strong>${post.username || 'unknown'}</strong>
+                <p>${post.caption || ''}</p>
+                <span style="color:${post.label === 'fake' ? 'red' : 'green'}">
+                    ${post.label}
+                </span>
+            </div>
+        `;
+
+        container.appendChild(el);
+    });
+}
 async function loadMoreFeed() { await loadFeed(); }
 
 function setFeedFilter(f, btn) {
