@@ -636,7 +636,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fb);font-size
 
 <script>
 /* ══ CONFIG ══ */
-const API = '';  // set to 'http://localhost:8000' for dev if needed
+const API = '/api';  // set to 'http://localhost:8000' for dev if needed
 
 /* ══ STATE ══ */
 let ws = null, stats = {}, notifications = [], feedOffset = 0, feedFilter = 'all';
@@ -795,7 +795,7 @@ function connectWS() {
     wsHost = location.host + API;
   }
   try {
-    ws = new WebSocket(`${proto}://${wsHost}/ws`);
+    ws = new WebSocket(`${proto}://${wsHost}${API}/ws`);
     ws.onopen  = () => {
       setText('wsStatus', 'connected');
       q('wsStatus').style.color = 'var(--green)';
