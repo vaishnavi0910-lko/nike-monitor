@@ -356,28 +356,17 @@ async def ws_endpoint(websocket: WebSocket):
 def stats_endpoint():
     try:
         base = get_stats() if DB_AVAILABLE else fallback_stats()
-
-        acc = {}
-        if yolo_model:
-            acc["yolov8"] = 94.7
-        if eff_model:
-            acc["efficientnet"] = 97.7
-        if lr_model:
-            acc["tfidf_lr"] = None
-
-        acc["scorer_mode"] = "ensemble" if lr_model else "keyword_only"
-        base["model_accuracy"] = acc
-
+        # Only report accuracy for models that are actually loaded
+    acc = {}
+    if yolo_model:    acc["yolov8"]       = 94.7
+    if eff_model:     acc["efficientnet"] = 97.7
+    if lr_model:      acc["tfidf_lr"]     = None   # computed from eval
+    acc["scorer_mode"] = "ensemble" if lr_model else "keyword_only"
+    base["model_accuracy"] = acc
         return base
-    except Exception:
-        return {
-            "total_posts": 0,
-            "brand_posts": 0,
-            "counterfeit_posts": 0,
-            "avg_likes": 0,
-            "top_usernames": {},
-            "model_accuracy": {}
-        }
+    except Exception as e:
+        return {"total_posts":0,"brand_posts":0,"counterfeit_posts":0,
+                "avg_likes":0,"top_usernames":{},"model_accuracy":{}}
 
 def _derive_label(post: dict) -> str:
     """Delegates to database._derive_score — single source of truth for all labelling."""
@@ -399,8 +388,6 @@ def feed_endpoint(limit:int=50, offset:int=0, source:Optional[str]=None):
     try:
         if DB_AVAILABLE:
             total, posts = get_posts(limit=limit, offset=offset, source_type=source)
-            if not posts:
-                return fallback_feed(limit=limit, source=source)
             for p in posts:
                 # Always compute score if missing or zero
                 if (not p.get("final_score") or float(p.get("final_score",0)) == 0.0) and p.get("caption"):
