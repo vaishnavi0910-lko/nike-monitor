@@ -251,7 +251,11 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fb);font-size
     </div>
   </div>
   <div class="divider" style="margin:8px 12px"></div>
-  <div class="api-box">
+  <div id="pipelineStatus" style="margin:0 10px 6px;padding:6px 9px;border-radius:6px;font-size:10px;font-family:var(--fm);display:flex;align-items:center;gap:5px;background:rgba(34,208,122,.08);border:1px solid rgba(34,208,122,.2);color:var(--green)">
+  <span id="pipelineDot" style="width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block"></span>
+  <span id="pipelineLabel">Pipeline ready</span>
+</div>
+<div class="api-box">
     <div class="api-label">Apify Hashtags</div>
     <select class="api-select" id="hashtagSelect">
       <option>default set</option><option>custom #1</option><option>custom #2</option>
@@ -635,17 +639,38 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fb);font-size
 const API = '/api';  // set to 'http://localhost:8000' for dev if needed
 
 /* ══ STATE ══ */
-let ws=null, stats={}, feedData=[], allFeedPosts=[], feedOffset=0, feedFilter='all';
+let ws = null, stats = {}, notifications = [], feedOffset = 0, feedFilter = 'all';
 let feedSort='Newest', notifications=[], charts={}, sentChartObj=null;
 let currentUser=null, authToken=localStorage.getItem('bm_token')||null;
 
 /* ══ INIT ══ */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   connectWS();
   if (authToken) restoreSession();
   else updateAvatarUI(null);
   loadDashboard();
-  setInterval(loadStats, 30000);
+
+  // Poll stats every 30s + refresh feed if visible
+  setInterval(() => {
+    loadStats();
+    const feedPage = q('page-feed');
+    if (feedPage && feedPage.classList.contains('active')) {
+      feedOffset = 0; feedData = []; loadFeed();
+    }
+  }, 30000);
+
+  // Check pipeline health on load
+  try {
+    const status = await apiFetch('/scrape/status/detail');
+    if (status) {
+      if (!status.pipeline?.apify_token_set) {
+        console.warn('APIFY_TOKEN not set — live scraping disabled');
+      }
+      if (!status.models?.tfidf_lr) {
+        console.warn('TF-IDF/LR model not loaded — using keyword scoring only');
+      }
+    }
+  } catch(e) { /* non-fatal */ }
 });
 
 /* ══ AUTH ══ */
@@ -759,23 +784,94 @@ async function saveAlertSettings() {
 
 /* ══ WEBSOCKET ══ */
 function connectWS() {
-  const proto = location.protocol==='https:'?'wss':'ws';
-  const host  = API ? API.replace(/^https?:\/\//,'') : location.host;
+  const proto   = location.protocol === 'https:' ? 'wss' : 'ws';
+  // Handle both '/api' proxy prefix and direct 'http://host:port' forms
+  let wsHost;
+  if (API.startsWith('http')) {
+    wsHost = API.replace(/^https?:\/\//, '');
+  } else if (API === '/api' || API === '') {
+    wsHost = location.host;
+  } else {
+    wsHost = location.host + API;
+  }
   try {
-    ws = new WebSocket(`${proto}://${host}/ws`);
-    ws.onopen  = () => { setText('wsStatus','connected'); q('wsStatus').style.color='var(--green)'; };
-    ws.onclose = () => { setText('wsStatus','disconnected'); q('wsStatus').style.color='var(--accent)'; setTimeout(connectWS,3000); };
-    ws.onmessage = e => handleWSMsg(JSON.parse(e.data));
-  } catch { setText('wsStatus','ws off'); }
+    ws = new WebSocket(`${proto}://${wsHost}/ws`);
+    ws.onopen  = () => {
+      setText('wsStatus', 'connected');
+      q('wsStatus').style.color = 'var(--green)';
+      // Send ping every 20s to keep connection alive
+      ws._pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+      }, 20000);
+    };
+    ws.onclose = () => {
+      setText('wsStatus', 'reconnecting…');
+      q('wsStatus').style.color = 'var(--amber)';
+      if (ws._pingInterval) clearInterval(ws._pingInterval);
+      setTimeout(connectWS, 3000);
+    };
+    ws.onerror = () => { setText('wsStatus', 'error'); q('wsStatus').style.color = 'var(--accent)'; };
+    ws.onmessage = e => {
+      try { handleWSMsg(JSON.parse(e.data)); } catch(err) { console.warn('WS parse error', err); }
+    };
+  } catch(e) { setText('wsStatus', 'ws off'); console.warn('WS connect failed', e); }
 }
 
 function handleWSMsg(msg) {
-  if (msg.type==='scrape_complete') {
-    addNotif({user:'System',text:`Scrape done: +${msg.posts_added||0} posts`,ts:now(),badge:'real'});
-    loadStats(); loadDashboard();
+  if (!msg || !msg.type) return;
+
+  if (msg.type === 'connected') {
+    // Server sends initial stats on connect
+    if (msg.data) updateStatsFromData(msg.data);
+    if (msg.health) updateHealthStatus(msg.health);
+    setText('wsStatus', 'connected');
+    q('wsStatus').style.color = 'var(--green)';
   }
-  if (msg.post && msg.post.label==='fake') {
-    addNotif({user:'@'+(msg.post.username||'?'),text:(msg.post.caption||'').slice(0,80),ts:'just now',badge:'fake'});
+
+  if (msg.type === 'scrape_complete' || msg.type === 'pipeline_complete') {
+    const added = msg.posts_added || msg.result?.posts_added || 0;
+    addNotif({user:'System', text:`Scrape done: +${added} posts added`, ts:now(), badge:'real'});
+    loadStats();
+    loadDashboard();
+    // Refresh feed if on feed page
+    const feedPage = q('page-feed');
+    if (feedPage && feedPage.classList.contains('active')) { feedOffset=0; feedData=[]; loadFeed(); }
+  }
+
+  if (msg.type === 'scrape_error') {
+    addNotif({user:'System', text:`Scrape error: ${msg.error||'unknown'}`, ts:now(), badge:'fake'});
+  }
+
+  if (msg.type === 'heartbeat' || msg.type === 'pong') {
+    // Keepalive — update connection indicator
+    q('wsStatus').style.color = 'var(--green)';
+  }
+
+  if (msg.post && msg.post.label === 'fake') {
+    addNotif({user:'@'+(msg.post.username||'?'), text:(msg.post.caption||'').slice(0,80), ts:'just now', badge:'fake'});
+    loadDashFeed();
+  }
+}
+
+function updateHealthStatus(health) {
+  if (!health) return;
+  const tick = ok => `<span style="color:${ok?'var(--green)':'var(--accent)'}">${ok?'✓':'✗'}</span>`;
+  setHTML('pdYolo', tick(health.yolo_loaded));
+  setHTML('pdLr',   tick(health.lr_loaded));
+
+  // Update pipeline indicator in sidebar
+  const dot   = q('pipelineDot');
+  const label = q('pipelineLabel');
+  const box   = q('pipelineStatus');
+  if (health.apify_ready) {
+    if (dot)   { dot.style.background = 'var(--green)'; }
+    if (label) label.textContent = 'Live scraper active';
+    if (box)   { box.style.background='rgba(34,208,122,.08)'; box.style.borderColor='rgba(34,208,122,.2)'; box.style.color='var(--green)'; }
+  } else {
+    if (dot)   { dot.style.background = 'var(--amber)'; }
+    if (label) label.textContent = 'Set APIFY_TOKEN';
+    if (box)   { box.style.background='rgba(245,166,35,.08)'; box.style.borderColor='rgba(245,166,35,.2)'; box.style.color='var(--amber)'; }
+    addNotif({user:'System', text:'APIFY_TOKEN not set — auto-scraping disabled. Using local files.', ts:now(), badge:'fake'});
   }
 }
 
@@ -802,6 +898,30 @@ async function apiFetch(path, opts={}) {
 }
 
 /* ══ STATS ══ */
+function updateStatsFromData(data) {
+  if (!data) return;
+  stats = {...stats, ...data};
+  const total = parseInt(data.total_posts || data.total || 0);
+  const fake  = parseInt(data.counterfeit_posts || data.fake || 0);
+  const real  = parseInt(data.brand_posts || data.real || 0);
+  if (total > 0) {
+    setText('m-total', total.toLocaleString());
+    setText('m-fake',  fake.toLocaleString());
+    setText('m-real',  real.toLocaleString());
+    setText('sb-total', fmt(total));
+    setText('sb-fake',  fmt(fake));
+    setText('sb-real',  fmt(real));
+    setText('liveCount', `▲ ${fmt(total)} posts`);
+    const fkPct = ((fake/total)*100).toFixed(1);
+    setText('m-fake-pct', `${fkPct}% of total`);
+    const score = Math.max(0, Math.min(100, Math.round(100-(fake/total)*100)));
+    const circ = 163, off = circ - circ*score/100;
+    const arc = document.getElementById('healthArc');
+    if (arc) { arc.setAttribute('stroke-dashoffset', off.toFixed(1)); arc.setAttribute('stroke', score>60?'var(--green)':score>40?'var(--amber)':'var(--accent)'); }
+    setText('healthScore', score);
+  }
+}
+
 async function loadStats() {
   const data = await apiFetch('/stats');
   if (!data) return;
@@ -875,7 +995,7 @@ async function loadFeed() {
   if (feedOffset===0) {
     q('feedList').innerHTML = '<div class="skeleton" style="height:85px;margin-bottom:7px"></div><div class="skeleton" style="height:85px;margin-bottom:7px"></div><div class="skeleton" style="height:85px"></div>';
   }
-  const src = feedFilter!=='all' ? `&source=${feedFilter}` : '';
+  const src = feedFilter!=='all' ? `&source=${feedFilter}` : '';  // matches /feed?source=counterfeit|brand|uncertain
   const data = await apiFetch(`/feed?limit=20&offset=${feedOffset}${src}`);
   if (!data?.posts) return;
   if (feedOffset===0) { feedData=[]; q('feedList').innerHTML=''; }
@@ -1056,10 +1176,41 @@ async function analyzeSentiment() {
 
 /* ══ SCRAPE ══ */
 async function triggerScrape() {
-  const btn=q('scrapeBtn'); btn.disabled=true; btn.textContent='⏳ Starting…';
-  const data=await apiFetch('/scrape/now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hashtags:[],max_posts:50})});
-  if (data?.status==='started') { btn.textContent='✅ Running…'; addNotif({user:'System',text:'Scrape started — watching for new posts',ts:now(),badge:'real'}); setTimeout(()=>{btn.disabled=false;btn.textContent='▶ Start Monitoring';},10000); }
-  else { btn.textContent='❌ Failed'; setTimeout(()=>{btn.disabled=false;btn.textContent='▶ Start Monitoring';},3000); }
+  const btn = q('scrapeBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting…';
+
+  // First check if pipeline is ready
+  const status = await apiFetch('/scrape/status');
+  if (status && !status.apify_token_set) {
+    addNotif({user:'System', text:'APIFY_TOKEN not set. Add it to your .env file and restart the server.', ts:now(), badge:'fake'});
+    btn.disabled = false;
+    btn.textContent = '▶ Start Monitoring';
+    return;
+  }
+  if (status && !status.apify_available) {
+    // Fallback: run the local pipeline on existing JSONL files
+    addNotif({user:'System', text:'Apify unavailable — running pipeline on local JSONL files…', ts:now(), badge:'real'});
+    const pRes = await apiFetch('/pipeline/run', {method:'POST'});
+    if (pRes?.status === 'ok') {
+      addNotif({user:'System', text:`Pipeline done: ${JSON.stringify(pRes.pipeline_results?.jsonl||{})}`, ts:now(), badge:'real'});
+      loadStats(); loadDashboard();
+    }
+    btn.disabled = false; btn.textContent = '▶ Start Monitoring';
+    return;
+  }
+
+  const data = await apiFetch('/scrape/now', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({hashtags:[], max_posts:50})});
+  if (data?.status === 'started') {
+    btn.textContent = '✅ Running…';
+    addNotif({user:'System', text:'Live scrape started via Apify — results push via WebSocket', ts:now(), badge:'real'});
+    setTimeout(() => { btn.disabled=false; btn.textContent='▶ Start Monitoring'; }, 15000);
+  } else {
+    const msg = data?.message || data?.detail || 'Failed to start scrape';
+    addNotif({user:'System', text:`Error: ${msg}`, ts:now(), badge:'fake'});
+    btn.textContent = '❌ Failed';
+    setTimeout(() => { btn.disabled=false; btn.textContent='▶ Start Monitoring'; }, 3000);
+  }
 }
 
 async function rescore() {
