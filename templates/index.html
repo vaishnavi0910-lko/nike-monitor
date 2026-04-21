@@ -641,6 +641,7 @@ const API = '/api';  // set to 'http://localhost:8000' for dev if needed
 /* ══ STATE ══ */
 let ws = null, stats = {}, notifications = [], feedOffset = 0;
 let feedSort = 'Newest', feedData = [], allFeedPosts = [], charts = {}, sentChartObj = null;
+let feedFilter = 'all';
 let currentUser = null, authToken = localStorage.getItem('bm_token') || null;
 
 /* ══ INIT ══ */
@@ -923,16 +924,35 @@ function updateStatsFromData(data) {
 }
 
 async function loadStats() {
-    const data = await apiFetch('/feed');
-    if (!data) return;
-
-    const total = data.length;
-    const fake = data.filter(p => p.label === 'fake').length;
-    const real = data.filter(p => p.label === 'real').length;
-
-    document.querySelector('#totalMentions').innerText = total;
-    document.querySelector('#fakePosts').innerText = fake;
-    document.querySelector('#realPosts').innerText = real;
+  const data = await apiFetch('/stats');
+  if (!data) return;
+  updateStatsFromData(data);
+  // Update sidebar pills
+  const total = data.total_posts || 0;
+  const fake  = data.counterfeit_posts || 0;
+  const real  = data.brand_posts || 0;
+  setText('s-real', real.toLocaleString());
+  setText('s-fake',  fake.toLocaleString());
+  setText('s-sus',   (total - real - fake).toLocaleString());
+  setText('m-likes', data.avg_likes != null ? data.avg_likes.toLocaleString() : '—');
+  // Profile dropdown counts
+  setText('pdPosts', total.toLocaleString());
+  setText('pdFake',  fake.toLocaleString());
+  // Reputation bars
+  if (total > 0) {
+    setBar('repRealBar', 'repReal', (real / total) * 100);
+    setBar('repFakeBar', 'repFake', (fake / total) * 100);
+  }
+  setText('repTotal', total.toLocaleString());
+  // Top users / model accuracy for analytics page
+  if (data.top_usernames) renderTopUsers(data.top_usernames);
+  if (data.model_accuracy) {
+    const acc = {};
+    for (const [k, v] of Object.entries(data.model_accuracy)) {
+      if (typeof v === 'number') acc[k] = v;
+    }
+    if (Object.keys(acc).length) renderModelAccuracy(acc);
+  }
 }
 async function loadDashboard() {
   await loadStats();
@@ -949,32 +969,19 @@ async function loadDashFeed() {
 
 /* ══ FEED ══ */
 async function loadFeed() {
-    const data = await apiFetch('/feed');
-    if (!data) return;
+  const source = typeof feedFilter !== 'undefined' && feedFilter !== 'all' ? feedFilter : null;
+  const url = '/feed?limit=50&offset=' + feedOffset + (source ? '&source=' + source : '');
+  const data = await apiFetch(url);
+  if (!data) return;
 
-    console.log("FEED DATA:", data); // debug
+  const posts = data.posts || [];
+  if (feedOffset === 0) feedData = posts;
+  else feedData = feedData.concat(posts);
 
-    const container = document.querySelector('#dashFeed'); // adjust if needed
-    container.innerHTML = '';
-
-    data.forEach(post => {
-        const el = document.createElement('div');
-        el.className = 'feed-item';
-
-        el.innerHTML = `
-            <div style="padding:10px;border-bottom:1px solid #333">
-                <strong>${post.username || 'unknown'}</strong>
-                <p>${post.caption || ''}</p>
-                <span style="color:${post.label === 'fake' ? 'red' : 'green'}">
-                    ${post.label}
-                </span>
-            </div>
-        `;
-
-        container.appendChild(el);
-    });
+  allFeedPosts = feedData;
+  renderPosts(feedData, 'feedList', false);
 }
-async function loadMoreFeed() { await loadFeed(); }
+async function loadMoreFeed() { feedOffset += 50; await loadFeed(); }
 
 function setFeedFilter(f, btn) {
   feedFilter=f;
