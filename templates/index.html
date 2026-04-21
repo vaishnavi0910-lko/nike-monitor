@@ -640,8 +640,8 @@ const API = '/api';  // set to 'http://localhost:8000' for dev if needed
 
 /* ══ STATE ══ */
 let ws = null, stats = {}, notifications = [], feedOffset = 0, feedFilter = 'all';
-let feedSort='Newest', notifications=[], charts={}, sentChartObj=null;
-let currentUser=null, authToken=localStorage.getItem('bm_token')||null;
+let feedSort = 'Newest', feedData = [], allFeedPosts = [], charts = {}, sentChartObj = null;
+let currentUser = null, authToken = localStorage.getItem('bm_token') || null;
 
 /* ══ INIT ══ */
 document.addEventListener('DOMContentLoaded', async () => {
