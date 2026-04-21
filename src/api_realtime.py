@@ -79,7 +79,7 @@ except Exception as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("brand_monitor")
 
-app = FastAPI(title="Brand Monitor API", version="4.0.0")
+app = FastAPI(title="Brand Monitor API", version="4.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Safe directory creation — won't crash if read-only
@@ -113,8 +113,21 @@ async def broadcast_to_clients(data: dict):
     ws_clients.difference_update(dead)
 
 # ── Startup ──────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup_event():
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── STARTUP ──
+    global yolo_model, eff_model, lr_model, vectorizer
+    _do_startup()
+    yield
+    # ── SHUTDOWN ──
+    if APIFY_AVAILABLE: stop_scheduler()
+
+async def _startup_wrapper():
+    pass
+
+def _do_startup():
     global yolo_model, eff_model, lr_model, vectorizer
     print("="*55)
     print("  Brand Monitor v4.0")
@@ -180,9 +193,7 @@ async def startup_event():
     print("Ready → port 7860")
     print("="*55)
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    if APIFY_AVAILABLE: stop_scheduler()
+# shutdown handled in lifespan context manager above
 
 # ── Lazy sentiment model loader ───────────────────────────────────
 _sentiment_loading = False
@@ -303,23 +314,70 @@ def health():
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
-    await websocket.accept(); ws_clients.add(websocket)
+    await websocket.accept()
+    ws_clients.add(websocket)
     logger.info(f"WS connected ({len(ws_clients)} total)")
+    # Send initial stats on connect
     try:
-        while True: await websocket.receive_text()
-    except WebSocketDisconnect: ws_clients.discard(websocket)
-    except: ws_clients.discard(websocket)
+        init_stats = get_stats() if DB_AVAILABLE else fallback_stats()
+        await websocket.send_text(json.dumps({
+            "type":   "connected",
+            "data":   init_stats,
+            "ts":     datetime.now().isoformat(),
+            "health": {
+                "lr_loaded":   lr_model is not None,
+                "yolo_loaded": yolo_model is not None,
+                "apify_ready": APIFY_AVAILABLE and bool(os.getenv("APIFY_TOKEN",""))
+            }
+        }))
+    except Exception:
+        pass
+    try:
+        while True:
+            try:
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                if msg == "ping":
+                    await websocket.send_text(json.dumps({"type":"pong","ts":datetime.now().isoformat()}))
+            except asyncio.TimeoutError:
+                # Send keepalive heartbeat
+                try:
+                    await websocket.send_text(json.dumps({"type":"heartbeat","ts":datetime.now().isoformat()}))
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug(f"WS closed: {e}")
+    finally:
+        ws_clients.discard(websocket)
+        logger.info(f"WS disconnected ({len(ws_clients)} remaining)")
 
 @app.get("/stats")
 def stats_endpoint():
     try:
         base = get_stats() if DB_AVAILABLE else fallback_stats()
-        base["model_accuracy"] = {"yolov8":94.7,"efficientnet":97.7,
-                                   "distilbert":91.2,"tfidf_lr":99.0,"ensemble":99.0}
+
+        acc = {}
+        if yolo_model:
+            acc["yolov8"] = 94.7
+        if eff_model:
+            acc["efficientnet"] = 97.7
+        if lr_model:
+            acc["tfidf_lr"] = None
+
+        acc["scorer_mode"] = "ensemble" if lr_model else "keyword_only"
+        base["model_accuracy"] = acc
+
         return base
-    except Exception as e:
-        return {"total_posts":0,"brand_posts":0,"counterfeit_posts":0,
-                "avg_likes":0,"top_usernames":{},"model_accuracy":{}}
+    except Exception:
+        return {
+            "total_posts": 0,
+            "brand_posts": 0,
+            "counterfeit_posts": 0,
+            "avg_likes": 0,
+            "top_usernames": {},
+            "model_accuracy": {}
+        }
 
 def _derive_label(post: dict) -> str:
     """Delegates to database._derive_score — single source of truth for all labelling."""
@@ -341,13 +399,25 @@ def feed_endpoint(limit:int=50, offset:int=0, source:Optional[str]=None):
     try:
         if DB_AVAILABLE:
             total, posts = get_posts(limit=limit, offset=offset, source_type=source)
+            if not posts:
+                return fallback_feed(limit=limit, source=source)
             for p in posts:
-                if not p.get("final_score") and p.get("caption"):
+                # Always compute score if missing or zero
+                if (not p.get("final_score") or float(p.get("final_score",0)) == 0.0) and p.get("caption"):
                     try:
-                        p["final_score"] = get_text_score(p["caption"])
+                        score = get_text_score(p["caption"])
+                        p["final_score"] = score
+                        # Update DB with the computed score so it's not recomputed every time
+                        if DB_AVAILABLE and score > 0 and p.get("id"):
+                            try:
+                                from src.database import update_post_score
+                                update_post_score(p["id"], score)
+                            except Exception:
+                                pass
                     except Exception:
                         p["final_score"] = 0.0
-                p["label"] = _derive_label(p)
+                p["label"]      = _derive_label(p)
+                p["risk_score"] = round(float(p.get("final_score",0)) * 100, 1)
             return {"total":total,"offset":offset,"limit":limit,"posts":posts}
         return fallback_feed(limit=limit, source=source)
     except Exception as e:
@@ -447,14 +517,43 @@ class ScrapeRequest(BaseModel):
 @app.post("/scrape/now")
 async def scrape_now(req: ScrapeRequest):
     if not APIFY_AVAILABLE: raise HTTPException(status_code=503, detail="Apify not available")
-    if not os.getenv("APIFY_TOKEN",""): raise HTTPException(status_code=400, detail="APIFY_TOKEN not set")
+    if not os.getenv("APIFY_TOKEN",""): raise HTTPException(status_code=400, detail="APIFY_TOKEN not set. Set it as an environment variable.")
     hashtags = req.hashtags or HASHTAGS
+
     async def _run():
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: run_scrape(hashtags=hashtags, max_posts=req.max_posts))
-        await broadcast_to_clients({"type":"scrape_complete","result":result})
+        try:
+            loop   = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: run_scrape(hashtags=hashtags, max_posts=req.max_posts))
+
+            # ── FIX: score each post through ML pipeline after scrape ──
+            posts_added = result.get("posts_added", 0)
+            if DB_AVAILABLE:
+                try:
+                    fixed = rescore_existing_posts()
+                    logger.info(f"Post-scrape rescore: fixed {fixed} posts")
+                    # Alert processing
+                    if ALERTS_AVAILABLE:
+                        _, fake_posts = get_posts(limit=100, source_type="fake")
+                        for p in fake_posts[-posts_added:]:
+                            process_new_post_for_alerts(p)
+                        check_bulk_alert()
+                except Exception as e:
+                    logger.warning(f"Post-scrape pipeline error: {e}")
+
+            await broadcast_to_clients({
+                "type":        "scrape_complete",
+                "result":      result,
+                "posts_added": posts_added,
+                "ts":          datetime.now().isoformat()
+            })
+        except Exception as e:
+            logger.error(f"Scrape task failed: {e}")
+            await broadcast_to_clients({"type":"scrape_error","error":str(e)})
+
     asyncio.create_task(_run())
-    return {"status":"started","hashtags":hashtags,"max_posts":req.max_posts}
+    return {"status":"started","hashtags":hashtags,"max_posts":req.max_posts,
+            "message":"Scraping started. Results will push via WebSocket."}
 
 @app.get("/scrape/status")
 def scrape_status():
@@ -479,9 +578,22 @@ def load_jsonl():
                     caption = post.get("caption","")
                     if not caption or len(caption.strip()) < 10: continue
                     if sum(1 for c in caption if ord(c)<128)/len(caption) < 0.6: continue
-                    inp_url = post.get("inputUrl","")
-                    src     = "counterfeit" if any(w in inp_url.lower() for w in ["fake","replica","counterfeit"]) else "brand"
+                    inp_url   = post.get("inputUrl","")
+                    hashtags  = post.get("hashtags",[])
+                    # ── FIX: use ML score + hashtag signals, not just URL ──
                     text_score = get_text_score(caption)
+                    htag_str   = " ".join(h.lower() for h in hashtags)
+                    htag_fake  = any(w in htag_str for w in [
+                        "repshoes","replica","firstcopy","repsneakers","replicakicks",
+                        "fakejordan","1to1","uabatch","dhgate","weidian","superfake"
+                    ])
+                    url_fake   = any(w in inp_url.lower() for w in ["fake","replica","counterfeit","rep"])
+                    if text_score >= THRESHOLD_FAKE or htag_fake or url_fake:
+                        src = "counterfeit"
+                    elif text_score >= THRESHOLD_UNCERTAIN:
+                        src = "uncertain"
+                    else:
+                        src = "brand"
                     all_posts.append({"id":str(post.get("id","")),"caption":caption.strip(),
                         "username":post.get("ownerUsername",""),"likes":post.get("likesCount",0),
                         "comments":post.get("commentsCount",0),"timestamp":post.get("timestamp",""),
@@ -492,6 +604,82 @@ def load_jsonl():
     if not all_posts: return {"status":"empty","files_read":files_read}
     added = insert_posts(all_posts) if DB_AVAILABLE else 0
     return {"status":"success","files_read":files_read,"new_posts":len(all_posts),"added_to_db":added}
+
+@app.get("/scrape/status/detail")
+def scrape_status_detail():
+    """Detailed status of data pipeline + automation."""
+    apify_token = bool(os.getenv("APIFY_TOKEN",""))
+    stats_now   = get_stats() if DB_AVAILABLE else {}
+    return {
+        "pipeline": {
+            "apify_available":    APIFY_AVAILABLE,
+            "apify_token_set":    apify_token,
+            "auto_scraper":       "running every 6h" if (APIFY_AVAILABLE and apify_token) else "disabled — set APIFY_TOKEN",
+            "db_available":       DB_AVAILABLE,
+            "fallback_csv":       FALLBACK_CSV.exists(),
+        },
+        "models": {
+            "yolo":         yolo_model is not None,
+            "efficientnet": eff_model  is not None,
+            "tfidf_lr":     lr_model   is not None,
+            "sentiment":    sentiment_model is not None,
+            "scorer_mode":  "ensemble" if lr_model else "keyword_only",
+        },
+        "data": {
+            "total_posts":       stats_now.get("total_posts",0),
+            "counterfeit_posts": stats_now.get("counterfeit_posts",0),
+            "brand_posts":       stats_now.get("brand_posts",0),
+        },
+        "alerts":       ALERTS_AVAILABLE,
+        "ws_clients":   len(ws_clients),
+        "timestamp":    datetime.now().isoformat(),
+    }
+
+@app.post("/pipeline/run")
+async def run_full_pipeline(background_tasks=None):
+    """
+    Run the full pipeline in sequence:
+    1. Load any JSONL files from data/raw/instagram
+    2. Score all posts through ML
+    3. Re-run alerts
+    4. Broadcast stats via WebSocket
+    """
+    results = {}
+
+    # Step 1: Load JSONL
+    try:
+        jsonl_result = load_jsonl()
+        results["jsonl"] = jsonl_result
+    except Exception as e:
+        results["jsonl"] = {"error": str(e)}
+
+    # Step 2: Rescore
+    try:
+        if DB_AVAILABLE:
+            fixed = rescore_existing_posts()
+            results["rescore"] = {"fixed": fixed}
+    except Exception as e:
+        results["rescore"] = {"error": str(e)}
+
+    # Step 3: Alert processing
+    try:
+        if ALERTS_AVAILABLE and DB_AVAILABLE:
+            _, fake_posts = get_posts(limit=200, source_type="fake")
+            for p in fake_posts:
+                process_new_post_for_alerts(p)
+            check_bulk_alert()
+            results["alerts"] = {"processed": len(fake_posts)}
+    except Exception as e:
+        results["alerts"] = {"error": str(e)}
+
+    # Step 4: Broadcast
+    try:
+        stats_now = get_stats() if DB_AVAILABLE else {}
+        await broadcast_to_clients({"type":"pipeline_complete","stats":stats_now,"results":results})
+    except Exception as e:
+        results["broadcast"] = {"error": str(e)}
+
+    return {"status":"ok","pipeline_results":results}
 
 # ══════════════════════════════════════════════════════════════════
 # USER AUTH ENDPOINTS
