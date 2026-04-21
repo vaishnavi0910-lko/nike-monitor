@@ -1,4 +1,3 @@
-
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -76,6 +75,18 @@ except Exception as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("brand_monitor")
 
+# ── Lifespan (defined BEFORE FastAPI() so the reference is valid) ─
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── STARTUP ──
+    global yolo_model, eff_model, lr_model, vectorizer
+    _do_startup()
+    yield
+    # ── SHUTDOWN ──
+    if APIFY_AVAILABLE: stop_scheduler()
+
 app = FastAPI(title="Brand Monitor API", version="4.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -110,19 +121,6 @@ async def broadcast_to_clients(data: dict):
     ws_clients.difference_update(dead)
 
 # ── Startup ──────────────────────────────────────────────────────
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # ── STARTUP ──
-    global yolo_model, eff_model, lr_model, vectorizer
-    _do_startup()
-    yield
-    # ── SHUTDOWN ──
-    if APIFY_AVAILABLE: stop_scheduler()
-
-async def _startup_wrapper():
-    pass
 
 def _do_startup():
     global yolo_model, eff_model, lr_model, vectorizer
@@ -392,7 +390,7 @@ def feed(limit: int = 50, offset: int = 0, source: str = None):
     except Exception as e:
         print("CSV ERROR:", e)
         return {"total": 0, "posts": []}
-@app.get("/alerts")
+@app.get("/api/alerts")
 def alerts_endpoint(limit:int=20):
     try:
         if DB_AVAILABLE:
@@ -408,10 +406,10 @@ def alerts_endpoint(limit:int=20):
     except Exception as e:
         logger.error(f"Alerts error: {e}"); return {"total_alerts":0,"alerts":[]}
 
-@app.get("/alerts/log")
+@app.get("/api/alerts/log")
 def alerts_log(limit:int=20): return get_alert_log(limit)
 
-@app.post("/rescore")
+@app.post("/api/rescore")
 def rescore_endpoint():
     """Re-score + re-label all posts in the DB using database._derive_score."""
     try:
@@ -428,7 +426,7 @@ def rescore_endpoint():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/detect")
+@app.post("/api/detect")
 async def detect_image(file: UploadFile = File(...)):
     contents = await file.read()
     if yolo_model is None or eff_model is None:
@@ -440,7 +438,7 @@ async def detect_image(file: UploadFile = File(...)):
 class SentimentRequest(BaseModel):
     text: str
 
-@app.post("/sentiment")
+@app.post("/api/sentiment")
 def sentiment_endpoint(req: SentimentRequest):
     text = req.text.strip()
     if not text: raise HTTPException(status_code=400, detail="text required")
@@ -483,7 +481,7 @@ class ScrapeRequest(BaseModel):
     hashtags:  list = []
     max_posts: int  = 50
 
-@app.post("/scrape/now")
+@app.post("/api/scrape/now")
 async def scrape_now(req: ScrapeRequest):
     if not APIFY_AVAILABLE: raise HTTPException(status_code=503, detail="Apify not available")
     if not os.getenv("APIFY_TOKEN",""): raise HTTPException(status_code=400, detail="APIFY_TOKEN not set. Set it as an environment variable.")
@@ -524,13 +522,13 @@ async def scrape_now(req: ScrapeRequest):
     return {"status":"started","hashtags":hashtags,"max_posts":req.max_posts,
             "message":"Scraping started. Results will push via WebSocket."}
 
-@app.get("/scrape/status")
+@app.get("/api/scrape/status")
 def scrape_status():
     return {"apify_available":APIFY_AVAILABLE,"apify_token_set":bool(os.getenv("APIFY_TOKEN","")),
             "db_available":DB_AVAILABLE,"alerts_available":ALERTS_AVAILABLE,
             "ws_clients":len(ws_clients)}
 
-@app.post("/scrape/load-jsonl")
+@app.post("/api/scrape/load-jsonl")
 def load_jsonl():
     raw_dir = Path("data/raw/instagram")
     if not raw_dir.exists(): return {"error":"data/raw/instagram not found"}
@@ -574,7 +572,7 @@ def load_jsonl():
     added = insert_posts(all_posts) if DB_AVAILABLE else 0
     return {"status":"success","files_read":files_read,"new_posts":len(all_posts),"added_to_db":added}
 
-@app.get("/scrape/status/detail")
+@app.get("/api/scrape/status/detail")
 def scrape_status_detail():
     """Detailed status of data pipeline + automation."""
     apify_token = bool(os.getenv("APIFY_TOKEN",""))
@@ -604,7 +602,7 @@ def scrape_status_detail():
         "timestamp":    datetime.now().isoformat(),
     }
 
-@app.post("/pipeline/run")
+@app.post("/api/pipeline/run")
 async def run_full_pipeline(background_tasks=None):
     """
     Run the full pipeline in sequence:
@@ -684,7 +682,7 @@ def _auth(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
 
-@app.post("/auth/register")
+@app.post("/api/auth/register")
 def register(req: RegisterRequest):
     if not DB_AVAILABLE: raise HTTPException(status_code=503, detail="DB unavailable")
     if len(req.password) < 6: raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
@@ -692,20 +690,20 @@ def register(req: RegisterRequest):
     if not result["ok"]: raise HTTPException(status_code=400, detail=result["error"])
     return result
 
-@app.post("/auth/login")
+@app.post("/api/auth/login")
 def login(req: LoginRequest):
     if not DB_AVAILABLE: raise HTTPException(status_code=503, detail="DB unavailable")
     result = login_user(req.email, req.password)
     if not result["ok"]: raise HTTPException(status_code=401, detail=result["error"])
     return result
 
-@app.get("/auth/me")
+@app.get("/api/auth/me")
 def me(authorization: str = Header(None)):
     user = _auth(authorization)
     sub  = get_subscription(user["id"])
     return {"user": user, "subscription": sub}
 
-@app.put("/auth/subscription")
+@app.put("/api/auth/subscription")
 def update_sub(req: SubscriptionUpdate, authorization: str = Header(None)):
     user = _auth(authorization)
     data = {k: v for k, v in req.dict().items() if v is not None}
