@@ -1,7 +1,4 @@
-"""
-Brand Monitor — src/api_realtime.py
-Run: uvicorn src.api_realtime:app --host 0.0.0.0 --port 7860
-"""
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -352,38 +349,34 @@ async def ws_endpoint(websocket: WebSocket):
         ws_clients.discard(websocket)
         logger.info(f"WS disconnected ({len(ws_clients)} remaining)")
 
-@app.get("/stats")
+@app.get("/api/stats")
 def stats_endpoint():
     try:
         base = get_stats() if DB_AVAILABLE else fallback_stats()
-        # Only report accuracy for models that are actually loaded
-    acc = {}
-    if yolo_model:    acc["yolov8"]       = 94.7
-    if eff_model:     acc["efficientnet"] = 97.7
-    if lr_model:      acc["tfidf_lr"]     = None   # computed from eval
-    acc["scorer_mode"] = "ensemble" if lr_model else "keyword_only"
-    base["model_accuracy"] = acc
+
+        acc = {}
+        if yolo_model:
+            acc["yolov8"] = 94.7
+        if eff_model:
+            acc["efficientnet"] = 97.7
+        if lr_model:
+            acc["tfidf_lr"] = None
+
+        acc["scorer_mode"] = "ensemble" if lr_model else "keyword_only"
+        base["model_accuracy"] = acc
+
         return base
+
     except Exception as e:
-        return {"total_posts":0,"brand_posts":0,"counterfeit_posts":0,
-                "avg_likes":0,"top_usernames":{},"model_accuracy":{}}
-
-def _derive_label(post: dict) -> str:
-    """Delegates to database._derive_score — single source of truth for all labelling."""
-    try:
-        label, _, _ = _derive_score(post)
-        return label
-    except Exception:
-        score = float(post.get("final_score") or 0.0)
-        if post.get("source_type") == "counterfeit":
-            return "fake"
-        if score >= THRESHOLD_FAKE:
-            return "fake"
-        if score >= THRESHOLD_UNCERTAIN:
-            return "uncertain"
-        return "real"
-
-@app.get("/feed")
+        return {
+            "total_posts": 0,
+            "brand_posts": 0,
+            "counterfeit_posts": 0,
+            "avg_likes": 0,
+            "top_usernames": {},
+            "model_accuracy": {}
+        }
+@app.get("/api/feed")
 def feed(limit: int = 50, offset: int = 0, source: str = None):
     # Try DB first
     try:
@@ -395,7 +388,7 @@ def feed(limit: int = 50, offset: int = 0, source: str = None):
 
     # Fallback to CSV
     try:
-        return get_feed(limit=limit, source_filter=source)
+        return fallback_feed(limit=limit, source=source)
     except Exception as e:
         print("CSV ERROR:", e)
         return {"total": 0, "posts": []}
@@ -408,7 +401,7 @@ def alerts_endpoint(limit:int=20):
                 if not a.get("risk_score"):
                     a["risk_score"] = round(a.get("final_score", 0) * 100, 1)
                 if not a.get("label"):
-                    a["label"] = _derive_label(a)
+                    a["label"] = a.get("label", "unknown")
             return {"total_alerts":total,"alerts":alerts}
         fb = fallback_feed(limit=limit, source="counterfeit")
         return {"total_alerts":len(fb["posts"]),"alerts":fb["posts"]}
