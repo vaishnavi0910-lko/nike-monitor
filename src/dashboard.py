@@ -13,8 +13,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from pathlib  import Path
 
-PROCESSED_CSV = Path("data/processed/instagram_clean.csv")
-
+PROCESSED_CSV = Path("/var/www/nike-monitor/data/processed/instagram_clean.csv")
 
 # ══════════════════════════════════════════════════════════════════
 # DATA LOADER
