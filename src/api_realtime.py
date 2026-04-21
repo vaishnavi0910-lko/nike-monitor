@@ -384,32 +384,21 @@ def _derive_label(post: dict) -> str:
         return "real"
 
 @app.get("/feed")
-def feed_endpoint(limit:int=50, offset:int=0, source:Optional[str]=None):
+def feed(limit: int = 50, offset: int = 0, source: str = None):
+    # Try DB first
     try:
         if DB_AVAILABLE:
             total, posts = get_posts(limit=limit, offset=offset, source_type=source)
-            for p in posts:
-                # Always compute score if missing or zero
-                if (not p.get("final_score") or float(p.get("final_score",0)) == 0.0) and p.get("caption"):
-                    try:
-                        score = get_text_score(p["caption"])
-                        p["final_score"] = score
-                        # Update DB with the computed score so it's not recomputed every time
-                        if DB_AVAILABLE and score > 0 and p.get("id"):
-                            try:
-                                from src.database import update_post_score
-                                update_post_score(p["id"], score)
-                            except Exception:
-                                pass
-                    except Exception:
-                        p["final_score"] = 0.0
-                p["label"]      = _derive_label(p)
-                p["risk_score"] = round(float(p.get("final_score",0)) * 100, 1)
-            return {"total":total,"offset":offset,"limit":limit,"posts":posts}
-        return fallback_feed(limit=limit, source=source)
+            return {"total": total, "posts": posts}
     except Exception as e:
-        logger.error(f"Feed error: {e}"); return {"total":0,"posts":[]}
+        print("DB ERROR:", e)
 
+    # Fallback to CSV
+    try:
+        return get_feed(limit=limit, source_filter=source)
+    except Exception as e:
+        print("CSV ERROR:", e)
+        return {"total": 0, "posts": []}
 @app.get("/alerts")
 def alerts_endpoint(limit:int=20):
     try:
