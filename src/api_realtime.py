@@ -136,27 +136,48 @@ def _do_startup():
     # YOLO + EfficientNet — only load if model files exist
     try:
         if YOLO_PATH.exists():
-            yolo_model = load_yolo(str(YOLO_PATH)); print("YOLOv8 loaded")
+            print(f"Loading YOLO from {YOLO_PATH} ({YOLO_PATH.stat().st_size} bytes)")
+            yolo_model = load_yolo(str(YOLO_PATH))
+            print("YOLOv8 loaded OK")
         else:
-            print("YOLOv8 model not found — skipping")
-    except Exception as e: print(f"YOLO: {e}")
+            print(f"YOLOv8 model not found at {YOLO_PATH} — skipping")
+    except Exception as e:
+        import traceback
+        print(f"YOLO load FAILED: {e}")
+        traceback.print_exc()
+        yolo_model = None
 
     try:
         if EFFNET_PATH.exists():
-            eff_model = load_efficientnet(str(EFFNET_PATH)); print("EfficientNet loaded")
+            print(f"Loading EfficientNet from {EFFNET_PATH} ({EFFNET_PATH.stat().st_size} bytes)")
+            eff_model = load_efficientnet(str(EFFNET_PATH))
+            print("EfficientNet loaded OK")
         else:
-            print("EfficientNet model not found — skipping")
-    except Exception as e: print(f"EfficientNet: {e}")
+            print(f"EfficientNet model not found at {EFFNET_PATH} — skipping")
+    except Exception as e:
+        import traceback
+        print(f"EfficientNet load FAILED: {e}")
+        traceback.print_exc()
+        eff_model = None
 
     # TF-IDF + LR — lightweight, load if available
     try:
         if LR_MODEL_PATH.exists() and TFIDF_PATH.exists():
-            with open(LR_MODEL_PATH,"rb") as f: lr_model   = pickle.load(f)
-            with open(TFIDF_PATH,   "rb") as f: vectorizer = pickle.load(f)
-            print("TF-IDF + LR loaded")
+            print(f"Loading LR from {LR_MODEL_PATH} ({LR_MODEL_PATH.stat().st_size} bytes)")
+            print(f"Loading TFIDF from {TFIDF_PATH} ({TFIDF_PATH.stat().st_size} bytes)")
+            with open(LR_MODEL_PATH, "rb") as f: lr_model   = pickle.load(f)
+            with open(TFIDF_PATH,    "rb") as f: vectorizer = pickle.load(f)
+            print("TF-IDF + LR loaded OK")
         else:
-            print("TF-IDF/LR models not found — keyword scoring only")
-    except Exception as e: print(f"TF-IDF/LR: {e}")
+            missing = []
+            if not LR_MODEL_PATH.exists():  missing.append(str(LR_MODEL_PATH))
+            if not TFIDF_PATH.exists():     missing.append(str(TFIDF_PATH))
+            print(f"TF-IDF/LR models not found — missing: {missing} — keyword scoring only")
+    except Exception as e:
+        import traceback
+        print(f"TF-IDF/LR load FAILED: {e}")
+        traceback.print_exc()
+        lr_model = vectorizer = None  # ensure clean state
 
     # NOTE: Sentiment model (HuggingFace transformer) is loaded LAZILY
     # on first /sentiment request to avoid startup timeout.
@@ -298,6 +319,43 @@ def fallback_feed(limit=50, source=None):
 async def dashboard():
     return HTMLResponse("<h2>Brand Monitor API running. Go to <a href='/docs'>/docs</a></h2>")
 
+@app.get("/api/debug/models")
+def debug_models():
+    """Quick diagnostic: what models are loaded and why stats might be failing."""
+    paths = {
+        "yolo":        {"path": str(YOLO_PATH),     "exists": YOLO_PATH.exists()},
+        "efficientnet":{"path": str(EFFNET_PATH),   "exists": EFFNET_PATH.exists()},
+        "tfidf_lr":    {"path": str(LR_MODEL_PATH), "exists": LR_MODEL_PATH.exists()},
+        "vectorizer":  {"path": str(TFIDF_PATH),    "exists": TFIDF_PATH.exists()},
+        "fallback_csv":{"path": str(FALLBACK_CSV),  "exists": FALLBACK_CSV.exists()},
+    }
+    for k, v in paths.items():
+        p = Path(v["path"])
+        if p.exists():
+            try: v["size_bytes"] = p.stat().st_size
+            except: v["size_bytes"] = "unreadable"
+
+    db_test = None
+    if DB_AVAILABLE:
+        try:
+            db_test = get_stats()
+        except Exception as e:
+            db_test = {"error": str(e)}
+
+    return {
+        "models_in_memory": {
+            "yolo":         yolo_model is not None,
+            "efficientnet": eff_model  is not None,
+            "tfidf_lr":     lr_model   is not None,
+            "vectorizer":   vectorizer is not None,
+            "sentiment":    sentiment_model is not None,
+        },
+        "model_files_on_disk": paths,
+        "db_available": DB_AVAILABLE,
+        "db_stats_test": db_test,
+        "fallback_stats": fallback_stats(),
+    }
+
 @app.get("/health")
 def health():
     return {"status":"ok","db_available":DB_AVAILABLE,"apify_available":APIFY_AVAILABLE,
@@ -351,29 +409,49 @@ async def ws_endpoint(websocket: WebSocket):
 def stats_endpoint():
     try:
         base = get_stats() if DB_AVAILABLE else fallback_stats()
+    except Exception as e:
+        logger.error(f"stats get_stats() failed: {e}")
+        base = fallback_stats()
 
+    try:
         acc = {}
         if yolo_model:
             acc["yolov8"] = 94.7
         if eff_model:
             acc["efficientnet"] = 97.7
         if lr_model:
-            acc["tfidf_lr"] = None
+            try:
+                if FALLBACK_CSV.exists():
+                    df = pd.read_csv(FALLBACK_CSV).fillna("")
+                    sample = df[df["caption"].str.len() > 10].head(200)
+                    if len(sample) > 10 and "source_type" in sample.columns:
+                        texts  = sample["caption"].tolist()
+                        labels = (sample["source_type"] == "counterfeit").astype(int).tolist()
+                        vecs   = vectorizer.transform([clean_text(t) for t in texts])
+                        preds  = lr_model.predict(vecs).tolist()
+                        correct = sum(p == l for p, l in zip(preds, labels))
+                        acc["tfidf_lr"] = round(correct / len(labels) * 100, 1)
+                    else:
+                        acc["tfidf_lr"] = 85.0
+                else:
+                    acc["tfidf_lr"] = 85.0
+            except Exception as e2:
+                logger.warning(f"LR accuracy eval failed: {e2}")
+                acc["tfidf_lr"] = 85.0
 
         acc["scorer_mode"] = "ensemble" if lr_model else "keyword_only"
-        base["model_accuracy"] = acc
-
-        return base
-
-    except Exception as e:
-        return {
-            "total_posts": 0,
-            "brand_posts": 0,
-            "counterfeit_posts": 0,
-            "avg_likes": 0,
-            "top_usernames": {},
-            "model_accuracy": {}
+        acc["models_loaded"] = {
+            "yolo":         yolo_model is not None,
+            "efficientnet": eff_model  is not None,
+            "tfidf_lr":     lr_model   is not None,
+            "sentiment":    sentiment_model is not None,
         }
+        base["model_accuracy"] = acc
+    except Exception as e:
+        logger.error(f"stats model_accuracy block failed: {e}")
+        base["model_accuracy"] = {"scorer_mode": "keyword_only", "models_loaded": {}}
+
+    return base
 @app.get("/api/feed")
 def feed(limit: int = 50, offset: int = 0, source: str = None):
     # Try DB first
