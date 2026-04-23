@@ -931,7 +931,7 @@ function updateStatsFromData(data) {
 }
 
 async function loadStats() {
-  const data = await apiFetch('/stats');
+  const data = await apiFetch(`${API}/stats`);
   if (!data) return; // backend not ready — leave UI as-is rather than crashing
 
   const total = parseInt(data.total_posts || data.total || 0);
@@ -1005,7 +1005,7 @@ async function loadDashboard() {
 }
 
 async function loadDashFeed() {
-  const data = await apiFetch('/feed?limit=5');
+  const data = await apiFetch(`${API}/feed?limit=5`);
   if (data?.posts) renderPosts(data.posts, 'dashFeed', true);
 }
 
@@ -1014,7 +1014,7 @@ async function loadFeed() {
   // Backend source_type values: 'brand', 'counterfeit', 'uncertain' — not 'real'/'fake'
   const sourceMap = { real: 'brand', fake: 'counterfeit', uncertain: 'uncertain', all: null };
   const source = (feedFilter && feedFilter !== 'all') ? (sourceMap[feedFilter] || feedFilter) : null;
-  const url = '/feed?limit=50&offset=' + feedOffset + (source ? '&source=' + source : '');
+  const url = `${API}/feed?limit=50&offset=${feedOffset}${source ? '&source=' + source : ''}`;
   const data = await apiFetch(url);
   if (!data) return;
 
@@ -1113,7 +1113,7 @@ async function loadAnalytics() {
   await loadStats();
   drawTrendChart(); drawRiskChart(); drawEngagementChart();
   // Pull model accuracy from stats endpoint (already fetched above)
-  const data = await apiFetch('/stats');
+  const data = await apiFetch(`${API}/stats`);
   if (data?.model_accuracy) {
     const acc = data.model_accuracy;
     const display = {};
@@ -1177,7 +1177,7 @@ async function processFile(file) {
   q('detectPlaceholder').innerHTML='<div class="empty-state"><div class="ico">⏳</div><p>Analyzing image…</p></div>';
   q('detectPlaceholder').style.display='block';
   const form=new FormData(); form.append('file',file);
-  const data=await apiFetch('/detect',{method:'POST',body:form});
+  const data=await apifetch(`${API}/detect,{method:'POST',body:form});
   // Backend returns 200 with error field when models aren't loaded — detect that case
   if (!data || data.error || data.verdict === 'UNKNOWN') {
     const errMsg = data?.error || 'Detection failed — models not loaded';
