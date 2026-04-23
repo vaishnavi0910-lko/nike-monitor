@@ -924,35 +924,16 @@ function updateStatsFromData(data) {
 }
 
 async function loadStats() {
-  const data = await apiFetch('/stats');
-  if (!data) return;
-  updateStatsFromData(data);
-  // Update sidebar pills
-  const total = data.total_posts || 0;
-  const fake  = data.counterfeit_posts || 0;
-  const real  = data.brand_posts || 0;
-  setText('s-real', real.toLocaleString());
-  setText('s-fake',  fake.toLocaleString());
-  setText('s-sus',   (total - real - fake).toLocaleString());
-  setText('m-likes', data.avg_likes != null ? data.avg_likes.toLocaleString() : '—');
-  // Profile dropdown counts
-  setText('pdPosts', total.toLocaleString());
-  setText('pdFake',  fake.toLocaleString());
-  // Reputation bars
-  if (total > 0) {
-    setBar('repRealBar', 'repReal', (real / total) * 100);
-    setBar('repFakeBar', 'repFake', (fake / total) * 100);
-  }
-  setText('repTotal', total.toLocaleString());
-  // Top users / model accuracy for analytics page
-  if (data.top_usernames) renderTopUsers(data.top_usernames);
-  if (data.model_accuracy) {
-    const acc = {};
-    for (const [k, v] of Object.entries(data.model_accuracy)) {
-      if (typeof v === 'number') acc[k] = v;
-    }
-    if (Object.keys(acc).length) renderModelAccuracy(acc);
-  }
+    const data = await apiFetch('/stats');
+
+    // FIXED mapping
+    const total = data.total_posts || 0;
+    const fake = data.counterfeit_posts || 0;
+    const real = data.brand_posts || 0;
+
+    document.querySelector('#totalMentions').innerText = total;
+    document.querySelector('#fakePosts').innerText = fake;
+    document.querySelector('#realPosts').innerText = real;
 }
 async function loadDashboard() {
   await loadStats();
