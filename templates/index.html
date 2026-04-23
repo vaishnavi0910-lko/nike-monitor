@@ -857,6 +857,7 @@ function handleWSMsg(msg) {
 function updateHealthStatus(health) {
   if (!health) return;
   const tick = ok => `<span style="color:${ok?'var(--green)':'var(--accent)'}">${ok?'✓':'✗'}</span>`;
+  // WS health message uses yolo_loaded / lr_loaded
   setHTML('pdYolo', tick(health.yolo_loaded));
   setHTML('pdLr',   tick(health.lr_loaded));
 
@@ -901,6 +902,7 @@ async function apiFetch(path, opts={}) {
 /* ══ STATS ══ */
 function updateStatsFromData(data) {
   if (!data) return;
+  // Merge into global stats cache then re-render via loadStats-compatible path
   stats = {...stats, ...data};
   const total = parseInt(data.total_posts || data.total || 0);
   const fake  = parseInt(data.counterfeit_posts || data.fake || 0);
@@ -920,24 +922,83 @@ function updateStatsFromData(data) {
     const arc = document.getElementById('healthArc');
     if (arc) { arc.setAttribute('stroke-dashoffset', off.toFixed(1)); arc.setAttribute('stroke', score>60?'var(--green)':score>40?'var(--amber)':'var(--accent)'); }
     setText('healthScore', score);
+    setText('repTotal', total.toLocaleString());
+    setText('repReal', real.toLocaleString());
+    setText('repFake', fake.toLocaleString());
+    setStyle('repRealBar', 'width', ((real/total)*100).toFixed(0)+'%');
+    setStyle('repFakeBar', 'width', ((fake/total)*100).toFixed(0)+'%');
   }
 }
 
 async function loadStats() {
-    const data = await apiFetch('/stats');
+  const data = await apiFetch('/stats');
+  if (!data) return; // backend not ready — leave UI as-is rather than crashing
 
-    // FIXED mapping
-    const total = data.total_posts || 0;
-    const fake = data.counterfeit_posts || 0;
-    const real = data.brand_posts || 0;
+  const total = parseInt(data.total_posts || data.total || 0);
+  const fake  = parseInt(data.counterfeit_posts || data.fake || 0);
+  const real  = parseInt(data.brand_posts || data.real || 0);
+  const likes = parseInt(data.avg_likes || 0);
 
-    document.querySelector('#totalMentions').innerText = total;
-    document.querySelector('#fakePosts').innerText = fake;
-    document.querySelector('#realPosts').innerText = real;
+  // Metric cards (dashboard)
+  setText('m-total', total.toLocaleString());
+  setText('m-fake',  fake.toLocaleString());
+  setText('m-real',  real.toLocaleString());
+  setText('m-likes', likes > 0 ? likes.toLocaleString() : '—');
+
+  // Sidebar mini stats
+  setText('sb-total', fmt(total));
+  setText('sb-fake',  fmt(fake));
+  setText('sb-real',  fmt(real));
+
+  // Live count chip
+  if (total > 0) setText('liveCount', `▲ ${fmt(total)} posts`);
+
+  // Fake % delta
+  if (total > 0) {
+    const fkPct = ((fake / total) * 100).toFixed(1);
+    setText('m-fake-pct', `${fkPct}% of total`);
+  }
+
+  // Health arc
+  if (total > 0) {
+    const score = Math.max(0, Math.min(100, Math.round(100 - (fake / total) * 100)));
+    const circ = 163, off = circ - circ * score / 100;
+    const arc = document.getElementById('healthArc');
+    if (arc) {
+      arc.setAttribute('stroke-dashoffset', off.toFixed(1));
+      arc.setAttribute('stroke', score > 60 ? 'var(--green)' : score > 40 ? 'var(--amber)' : 'var(--accent)');
+    }
+    setText('healthScore', score);
+
+    // Brand reputation panel
+    setText('repTotal', total.toLocaleString());
+    const realPct = ((real / total) * 100).toFixed(0);
+    const fakePct = ((fake / total) * 100).toFixed(0);
+    setText('repReal', real.toLocaleString());
+    setText('repFake', fake.toLocaleString());
+    setStyle('repRealBar', 'width', realPct + '%');
+    setStyle('repFakeBar', 'width', fakePct + '%');
+  }
+
+  // Model health indicators (profile dropdown)
+  if (data.model_accuracy?.models_loaded) {
+    const ml = data.model_accuracy.models_loaded;
+    const tick = ok => `<span style="color:${ok?'var(--green)':'var(--accent)'}">${ok?'✓':'✗'}</span>`;
+    setHTML('pdYolo', tick(ml.yolo));
+    setHTML('pdLr',   tick(ml.tfidf_lr));
+  }
+
+  // Sidebar confidence pills — use actual thresholds from backend constants
+  setText('s-real', '>0.70');
+  setText('s-fake', '>0.50');
+  setText('s-sus',  '≤0.70');
+
+  // Keep global stats in sync for sentiment chart
+  stats = { ...stats, total_posts: total, counterfeit_posts: fake, brand_posts: real };
 }
 async function loadDashboard() {
-  await loadStats();
-  await loadDashFeed();
+  // Run in parallel so a slow/failed stats call doesn't block charts and feed
+  await Promise.allSettled([loadStats(), loadDashFeed()]);
   loadSentimentDist();
   drawMiniTrend();
   drawFakeRealChart();
@@ -950,7 +1011,9 @@ async function loadDashFeed() {
 
 /* ══ FEED ══ */
 async function loadFeed() {
-  const source = typeof feedFilter !== 'undefined' && feedFilter !== 'all' ? feedFilter : null;
+  // Backend source_type values: 'brand', 'counterfeit', 'uncertain' — not 'real'/'fake'
+  const sourceMap = { real: 'brand', fake: 'counterfeit', uncertain: 'uncertain', all: null };
+  const source = (feedFilter && feedFilter !== 'all') ? (sourceMap[feedFilter] || feedFilter) : null;
   const url = '/feed?limit=50&offset=' + feedOffset + (source ? '&source=' + source : '');
   const data = await apiFetch(url);
   if (!data) return;
@@ -1049,6 +1112,23 @@ async function loadAlerts() {
 async function loadAnalytics() {
   await loadStats();
   drawTrendChart(); drawRiskChart(); drawEngagementChart();
+  // Pull model accuracy from stats endpoint (already fetched above)
+  const data = await apiFetch('/stats');
+  if (data?.model_accuracy) {
+    const acc = data.model_accuracy;
+    const display = {};
+    if (typeof acc.yolov8     === 'number') display['YOLOv8']       = acc.yolov8;
+    if (typeof acc.efficientnet === 'number') display['EfficientNet'] = acc.efficientnet;
+    if (typeof acc.tfidf_lr   === 'number') display['TF-IDF + LR']  = acc.tfidf_lr;
+    if (Object.keys(display).length) renderModelAccuracy(display);
+  }
+  // Top users from feed
+  const feed = await apiFetch('/feed?limit=100');
+  if (feed?.posts?.length) {
+    const counts = {};
+    feed.posts.forEach(p => { if (p.username) counts[p.username] = (counts[p.username]||0) + 1; });
+    renderTopUsers(counts);
+  }
 }
 
 function renderTopUsers(users) {
@@ -1098,7 +1178,17 @@ async function processFile(file) {
   q('detectPlaceholder').style.display='block';
   const form=new FormData(); form.append('file',file);
   const data=await apiFetch('/detect',{method:'POST',body:form});
-  if (!data) { q('detectPlaceholder').innerHTML='<div class="empty-state"><div class="ico">❌</div><p>Detection failed — models not loaded</p></div>'; return; }
+  // Backend returns 200 with error field when models aren't loaded — detect that case
+  if (!data || data.error || data.verdict === 'UNKNOWN') {
+    const errMsg = data?.error || 'Detection failed — models not loaded';
+    q('detectPlaceholder').innerHTML=`<div class="empty-state">
+      <div class="ico">⚠️</div>
+      <p style="margin-bottom:6px">${errMsg}</p>
+      <p style="font-size:11px;color:var(--muted)">Make sure the server is running and models are in <code style="font-family:var(--fm);background:var(--bg3);padding:1px 5px;border-radius:3px">/var/www/nike-monitor/models/</code></p>
+      <p style="font-size:11px;color:var(--muted);margin-top:4px">Run: <code style="font-family:var(--fm);background:var(--bg3);padding:1px 5px;border-radius:3px">nohup uvicorn src.api_realtime:app --host 127.0.0.1 --port 8000 &gt; server.log 2&gt;&amp;1 &amp;</code></p>
+    </div>`;
+    return;
+  }
   q('detectPlaceholder').style.display='none'; q('detectResult').style.display='block';
   const isF=data.verdict==='COUNTERFEIT';
   const badge=q('verdictBadge'); badge.textContent=data.verdict||'UNKNOWN'; badge.className='verdict-badge '+(isF?'verdict-fake':'verdict-real');
@@ -1125,9 +1215,10 @@ async function analyzeSentiment() {
   const isF=data.label==='counterfeit_alert'||data.label==='fake';
   const v=q('sentimentVerdict'); v.textContent=isF?'🚨 COUNTERFEIT ALERT':'✅ '+(data.label||'REAL').toUpperCase();
   v.className='verdict-badge '+(isF?'verdict-fake':'verdict-real');
-  setBar('sr-cf','sv-cf', Math.min(data.all_scores?.counterfeit_alert||data.text_score||0,100));
-  setBar('sr-ts','sv-ts', Math.min(data.text_score||0,100));
-  setBar('sr-kw','sv-kw', Math.min(data.keyword_score||0,100));
+  // text_score and keyword_score are already 0-100 from backend — no extra multiply needed
+  setBar('sr-cf','sv-cf', Math.min(data.all_scores?.counterfeit_alert || 0, 100));
+  setBar('sr-ts','sv-ts', Math.min(data.text_score    || 0, 100));
+  setBar('sr-kw','sv-kw', Math.min(data.keyword_score || 0, 100));
   q('sentimentMeta').innerHTML=`Confidence: <strong>${data.confidence||'—'}%</strong> &nbsp;|&nbsp; Ensemble: <strong>${data.ensemble_used?'TF-IDF + BERT':'Keyword only'}</strong>`;
 }
 
