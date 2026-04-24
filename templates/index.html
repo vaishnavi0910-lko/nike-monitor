@@ -636,7 +636,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--fb);font-size
 
 <script>
 /* ══ CONFIG ══ */
-const API = window.location.origin + '/api';  // set to 'http://localhost:8000' for dev if needed
+const API = "https://nishchal.online/api";  // set to 'http://localhost:8000' for dev if needed
 
 /* ══ STATE ══ */
 let ws = null, stats = {}, notifications = [], feedOffset = 0;
@@ -1123,7 +1123,7 @@ async function loadAnalytics() {
     if (Object.keys(display).length) renderModelAccuracy(display);
   }
   // Top users from feed
-  const feed = await apiFetch('/feed?limit=100');
+  const data = await apiFetch(`${API}/feed?limit=100`);
   if (feed?.posts?.length) {
     const counts = {};
     feed.posts.forEach(p => { if (p.username) counts[p.username] = (counts[p.username]||0) + 1; });
@@ -1177,7 +1177,9 @@ async function processFile(file) {
   q('detectPlaceholder').innerHTML='<div class="empty-state"><div class="ico">⏳</div><p>Analyzing image…</p></div>';
   q('detectPlaceholder').style.display='block';
   const form=new FormData(); form.append('file',file);
-  const data=await apifetch(`${API}/detect,{method:'POST',body:form});
+  const data = await apiFetch(`${API}/detect`, {
+  method: 'POST',
+  body: form});
   // Backend returns 200 with error field when models aren't loaded — detect that case
   if (!data || data.error || data.verdict === 'UNKNOWN') {
     const errMsg = data?.error || 'Detection failed — models not loaded';
