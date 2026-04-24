@@ -796,7 +796,7 @@ function connectWS() {
     wsHost = location.host + API;
   }
   try {
-    ws = new WebSocket(`${proto}://${wshost}/api/ws`);
+    ws = new WebSocket(`${proto}://${wsHost}/api/ws`);
     ws.onopen  = () => {
       setText('wsStatus', 'connected');
       q('wsStatus').style.color = 'var(--green)';
