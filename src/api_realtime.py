@@ -267,7 +267,7 @@ def get_text_score(text):
     if lr_model and vectorizer:
         try:
             vec   = vectorizer.transform([clean_text(text)])
-            proba = float(lr_model.predict_proba(vec)[0][1])
+            proba = float(lr_model.predict_proba(vec)[0][0])  
             if kw >= 0.4:
                 final_score = 0.7 * kw + 0.3 * proba
             elif kw > 0:
@@ -421,24 +421,31 @@ def stats_endpoint():
             acc["efficientnet"] = 97.7
         if lr_model:
             try:
-                if FALLBACK_CSV.exists():
-                    df = pd.read_csv(FALLBACK_CSV).fillna("")
-                    sample = df[df["caption"].str.len() > 10].head(200)
-                    if len(sample) > 10 and "source_type" in sample.columns:
-                        texts  = sample["caption"].tolist()
-                        labels = (sample["source_type"] == "counterfeit").astype(int).tolist()
-                        vecs   = vectorizer.transform([clean_text(t) for t in texts])
-                        preds  = lr_model.predict(vecs).tolist()
-                        correct = sum(p == l for p, l in zip(preds, labels))
-                        acc["tfidf_lr"] = round(correct / len(labels) * 100, 1)
+                correct = 0
+                total = 0
+                df = pd.read_csv("/var/www/nike-monitor/data/processed/instagram_clean.csv").fillna("")
+                sample_posts = df[df["caption"].str.len() > 10].head(700).to_dict("records")
+                print("TFIDF POSTS:", len(sample_posts))
+                for row in sample_posts:
+                    caption = str(row.get("caption") or "")
+                    hashtags = row.get("hashtags", [])
+                    if isinstance(hashtags, list):
+                        hashtags = " ".join(hashtags)
                     else:
-                        acc["tfidf_lr"] = 85.0
-                else:
-                    acc["tfidf_lr"] = 85.0
-            except Exception as e2:
-                logger.warning(f"LR accuracy eval failed: {e2}")
-                acc["tfidf_lr"] = 85.0
-
+                        hashtags = str(hashtags)
+                    text = caption + " " + hashtags
+                    vec = vectorizer.transform([clean_text(text)])
+                    proba = lr_model.predict_proba(vec)[0][ list(lr_model.classes_).index("fake") ]
+                    pred = "fake" if proba >= 0.5 else "real"
+                    actual_raw = str(row.get("source_type", "")).lower().strip()
+                    actual = "fake" if actual_raw in ["counterfeit", "fake"] else "real"
+                    if pred == actual:
+                        correct += 1
+                    total += 1
+                acc["tfidf_lr"] = round((correct / total) * 100, 1) if total else 0.0
+            except Exception as e:
+                print("TFIDF ERROR:", e)
+                acc["tfidf_lr"] = 0.0
         acc["scorer_mode"] = "ensemble" if lr_model else "keyword_only"
         acc["models_loaded"] = {
             "yolo":         yolo_model is not None,
