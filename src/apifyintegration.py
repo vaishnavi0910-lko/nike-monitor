@@ -1,38 +1,11 @@
-"""
-Brand Monitor — src/apifyintegration.py
-=========================================
-Apify live-feed integration: fetches posts from Apify datasets,
-scores them, pushes to the dashboard via the in-memory live_posts store.
-
-How it works:
-  - On startup: loads all existing items from configured Apify datasets
-  - Every POLL_INTERVAL_SECONDS: fetches only new items (incremental)
-  - Each item is scored with TF-IDF + LR (or keyword fallback)
-  - /feed and /stats use get_live_feed() / get_live_stats()
-  - Triggers email/SMS alerts via alert_system.py
-
-Usage in api_realtime.py:
-    from src.apifyintegration import setup_apify_polling, get_live_feed, get_live_stats
-    app.add_event_handler("startup", lambda: asyncio.create_task(setup_apify_polling()))
-
-Install:
-    pip install httpx apscheduler
-"""
-
 import httpx
 import asyncio
 import logging
 from datetime    import datetime, timezone
 from collections import Counter
 from typing      import List, Dict, Optional
-
 logger = logging.getLogger("apify_integration")
-
-# ══════════════════════════════════════════════════════════════════
-# CONFIG
-# ══════════════════════════════════════════════════════════════════
-
-APIFY_TOKEN = "apify_api_YOUR_TOKEN_HERE"   # paste your Apify API token
+APIFY_TOKEN = "apify_api_YOUR_TOKEN_HERE"   
 
 # Apify Dataset IDs — find these in Apify Console → Storage → Datasets
 APIFY_DATASET_IDS: List[str] = [
@@ -45,18 +18,9 @@ MAX_POSTS_IN_MEMORY   = 500   # keep latest N posts in memory
 
 APIFY_BASE = "https://api.apify.com/v2"
 
-# ══════════════════════════════════════════════════════════════════
-# IN-MEMORY STORE
-# ══════════════════════════════════════════════════════════════════
 
 live_posts:   List[dict] = []
-last_fetched: Dict[str, int] = {}  # dataset_id → last item offset
-
-
-# ══════════════════════════════════════════════════════════════════
-# APIFY API CALLS
-# ══════════════════════════════════════════════════════════════════
-
+last_fetched: Dict[str, int] = {} 
 async def fetch_dataset_items(
     dataset_id: str,
     offset: int = 0,
@@ -74,8 +38,6 @@ async def fetch_dataset_items(
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         return resp.json()
-
-
 async def fetch_dataset_info(dataset_id: str) -> dict:
     """Get metadata (including total item count) for a dataset."""
     url = f"{APIFY_BASE}/datasets/{dataset_id}"
@@ -83,12 +45,6 @@ async def fetch_dataset_info(dataset_id: str) -> dict:
         resp = await client.get(url, params={"token": APIFY_TOKEN})
         resp.raise_for_status()
         return resp.json()
-
-
-# ══════════════════════════════════════════════════════════════════
-# SCORING PIPELINE
-# ══════════════════════════════════════════════════════════════════
-
 FAKE_KEYWORDS = [
     "replica", "rep ", "reps ", "firstcopy", "first copy", "replicakicks",
     "jordanrep", "repjordan", "dm for price", "dm us", "whatsapp",
@@ -96,16 +52,12 @@ FAKE_KEYWORDS = [
     "cheap nike", "order now", "replicasneakers", "repsneakers",
     "dhgate", "weidian"
 ]
-
-
 def keyword_fake_score(text: str) -> float:
     if not isinstance(text, str):
         return 0.0
     t    = text.lower()
     hits = sum(1 for kw in FAKE_KEYWORDS if kw in t)
     return min(hits / 3.0, 1.0)
-
-
 def score_post(raw: dict) -> dict:
     """
     Score a raw Apify Instagram post.
@@ -122,37 +74,33 @@ def score_post(raw: dict) -> dict:
 
     hashtag_str = " ".join(hashtags) if isinstance(hashtags, list) else str(hashtags)
     full_text   = f"{caption} {hashtag_str}".strip()
-
-    # ── Text score ────────────────────────────────────────────────
     kw_score = keyword_fake_score(full_text)
 
     try:
-        from src.api_realtime import lr_model, vectorizer, clean_text
-        if lr_model is not None and vectorizer is not None:
-            cleaned    = clean_text(full_text)
-            vec        = vectorizer.transform([cleaned])
-            proba      = float(lr_model.predict_proba(vec)[0][1])
+        import src.api_realtime as api_rt
+        if api_rt.lr_model is not None and api_rt.vectorizer is not None:
+            cleaned = api_rt.clean_text(full_text)
+            vec = api_rt.vectorizer.transform([cleaned])
+            classes = list(api_rt.lr_model.classes_)
+            fake_idx = classes.index("fake")
+            proba = float(api_rt.lr_model.predict_proba(vec)[0][fake_idx])
             text_score = round(0.7 * proba + 0.3 * kw_score, 4)
         else:
             text_score = round(kw_score, 4)
     except Exception:
         text_score = round(kw_score, 4)
-
-    # ── Sentiment score ───────────────────────────────────────────
-    sentiment_label = "neutral"
+     sentiment_label = "neutral"
     try:
-        from src.api_realtime import sentiment_model
-        if sentiment_model is not None and caption:
+
+        if api_rt.sentiment_model is not None and caption:
             mapping = {"LABEL_0": "negative", "LABEL_1": "neutral", "LABEL_2": "positive"}
-            res     = sentiment_model(caption[:512])[0]
+            res = api_rt.sentiment_model(caption[:512])[0]
             sentiment_label = mapping.get(res["label"], "neutral")
     except Exception:
         pass
 
     sent_score_map  = {"positive": 0.6, "neutral": 0.3, "negative": 0.4}
     sentiment_score = sent_score_map.get(sentiment_label, 0.3)
-
-    # ── Final fusion ──────────────────────────────────────────────
     final_score = round(0.75 * text_score + 0.25 * sentiment_score, 4)
 
     if final_score >= 0.45:
@@ -181,12 +129,6 @@ def score_post(raw: dict) -> dict:
         "sentiment":   sentiment_label,
         "fetched_at":  datetime.now(timezone.utc).isoformat()
     }
-
-
-# ══════════════════════════════════════════════════════════════════
-# POLLING LOGIC
-# ══════════════════════════════════════════════════════════════════
-
 async def poll_apify():
     """Fetch only new posts from all datasets since the last poll."""
     global live_posts
@@ -216,16 +158,12 @@ async def poll_apify():
                 check_bulk_alert()
             except Exception as e:
                 logger.warning(f"Alert processing error: {e}")
-
-            # Prepend newest first
             live_posts = scored + live_posts
             last_fetched[dataset_id] = total
             new_count += len(scored)
-
-        except Exception as e:
+         except Exception as e:
             logger.error(f"Poll error for dataset {dataset_id}: {e}")
-
-    # Bound memory
+   # Bound memory
     live_posts = live_posts[:MAX_POSTS_IN_MEMORY]
 
     if new_count:
@@ -233,8 +171,6 @@ async def poll_apify():
         logger.info(f"Poll complete: +{new_count} new | {len(live_posts)} total | {fake_n} fake")
     else:
         logger.info("Poll complete: no new posts")
-
-
 async def initial_load():
     """Load ALL existing items from all datasets on startup."""
     global live_posts
@@ -260,12 +196,6 @@ async def initial_load():
 
     fake_n = sum(1 for p in live_posts if p["label"] == "fake")
     logger.info(f"Initial load complete: {len(live_posts)} posts | {fake_n} fake")
-
-
-# ══════════════════════════════════════════════════════════════════
-# SCHEDULER / ENTRYPOINT
-# ══════════════════════════════════════════════════════════════════
-
 async def setup_apify_polling():
     """
     Call this on app startup to begin live polling.
@@ -289,13 +219,7 @@ async def setup_apify_polling():
             await poll_apify()
         except Exception as e:
             logger.error(f"Unhandled poll error: {e}")
-
-
-# ══════════════════════════════════════════════════════════════════
-# FEED / STATS HELPERS (used by api_realtime.py routes)
-# ══════════════════════════════════════════════════════════════════
-
-def get_live_feed(
+  def get_live_feed(
     limit:  int = 50,
     offset: int = 0,
     label:  Optional[str] = None
@@ -321,8 +245,6 @@ def get_live_feed(
         "last_updated": datetime.now(timezone.utc).isoformat(),
         "posts":        posts[offset: offset + limit]
     }
-
-
 def get_live_stats() -> dict:
     """
     Return dashboard stats derived from live_posts.
@@ -353,7 +275,5 @@ def get_live_stats() -> dict:
             "yolov8":       94.7,
             "efficientnet": 97.7,
             "distilbert":   91.2,
-            "tfidf_lr":     99.0,
-            "ensemble":     99.0
         }
     }
